@@ -4,6 +4,7 @@ package webrtc
 
 import (
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/nack"
 )
 
 // RegisterDefaultInterceptors will register some useful interceptors. If you want to customize which interceptors are loaded,
@@ -21,6 +22,15 @@ func RegisterDefaultInterceptors(mediaEngine *MediaEngine, interceptorRegistry *
 func ConfigureNack(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry) error {
 	mediaEngine.RegisterFeedback(RTCPFeedback{Type: "nack"}, RTPCodecTypeVideo)
 	mediaEngine.RegisterFeedback(RTCPFeedback{Type: "nack", Parameter: "pli"}, RTPCodecTypeVideo)
-	interceptorRegistry.Add(&interceptor.NACK{})
+	generator, err := nack.NewGeneratorInterceptor()
+	if err != nil {
+		return err
+	}
+	interceptorRegistry.Add(generator)
+	responder, err := nack.NewResponderInterceptor()
+	if err != nil {
+		return err
+	}
+	interceptorRegistry.Add(responder)
 	return nil
 }
