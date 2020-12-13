@@ -9,15 +9,22 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/randutil"
 	"github.com/pion/rtcp"
-	"github.com/pion/rtp"
+	"github.com/pion/srtp/v2"
 )
 
 // RTPSender allows an application to control how a given Track is encoded and transmitted to a remote peer
 type RTPSender struct {
 	track TrackLocal
 
-	srtpStream *srtpWriterFuture
-	context    TrackLocalContext
+	// TODO
+	srtpStream     *srtpWriterFuture
+	rtpInterceptor interceptor.RTPWriter
+
+	// TODO
+	rtcpReadStream  *srtp.ReadStreamSRTCP
+	rtcpInterceptor interceptor.RTCPReader
+
+	context TrackLocalContext
 
 	transport *DTLSTransport
 
@@ -36,8 +43,6 @@ type RTPSender struct {
 
 	mu                     sync.RWMutex
 	sendCalled, stopCalled chan struct{}
-
-	interceptorRTCPReader interceptor.RTCPReader
 }
 
 // NewRTPSender constructs a new RTPSender
@@ -64,7 +69,6 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		srtpStream: &srtpWriterFuture{},
 	}
 
-	r.interceptorRTCPReader = api.interceptor.BindRTCPReader(interceptor.RTCPReaderFunc(r.readRTCP))
 	r.srtpStream.rtpSender = r
 
 	return r, nil
@@ -156,13 +160,11 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 		return errRTPSenderSendAlreadyCalled
 	}
 
-	writeStream := &interceptorTrackLocalWriter{TrackLocalWriter: r.srtpStream}
-
 	r.context = TrackLocalContext{
 		id:          r.id,
 		params:      r.api.mediaEngine.getRTPParametersByKind(r.track.Kind(), []RTPTransceiverDirection{RTPTransceiverDirectionSendonly}),
 		ssrc:        parameters.Encodings[0].SSRC,
-		writeStream: writeStream,
+		writeStream: &interceptorStreamAdapter{r.rtpInterceptor},
 	}
 
 	codec, err := r.track.Bind(r.context)
@@ -170,34 +172,6 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 		return err
 	}
 	r.context.params.Codecs = []RTPCodecParameters{codec}
-
-	headerExtensions := make([]interceptor.RTPHeaderExtension, 0, len(r.context.params.HeaderExtensions))
-	for _, h := range r.context.params.HeaderExtensions {
-		headerExtensions = append(headerExtensions, interceptor.RTPHeaderExtension{ID: h.ID, URI: h.URI})
-	}
-	feedbacks := make([]interceptor.RTCPFeedback, 0, len(codec.RTCPFeedback))
-	for _, f := range codec.RTCPFeedback {
-		feedbacks = append(feedbacks, interceptor.RTCPFeedback{Type: f.Type, Parameter: f.Parameter})
-	}
-	info := &interceptor.StreamInfo{
-		ID:                  r.context.id,
-		Attributes:          interceptor.Attributes{},
-		SSRC:                uint32(r.context.ssrc),
-		PayloadType:         uint8(codec.PayloadType),
-		RTPHeaderExtensions: headerExtensions,
-		MimeType:            codec.MimeType,
-		ClockRate:           codec.ClockRate,
-		Channels:            codec.Channels,
-		SDPFmtpLine:         codec.SDPFmtpLine,
-		RTCPFeedback:        feedbacks,
-	}
-	writeStream.setRTPWriter(
-		r.api.interceptor.BindLocalStream(
-			info,
-			interceptor.RTPWriterFunc(func(p *rtp.Packet, attributes interceptor.Attributes) (int, error) {
-				return r.srtpStream.WriteRTP(&p.Header, p.Payload)
-			}),
-		))
 
 	close(r.sendCalled)
 	return nil
@@ -227,25 +201,19 @@ func (r *RTPSender) Stop() error {
 }
 
 // Read reads incoming RTCP for this RTPReceiver
-func (r *RTPSender) Read(b []byte) (n int, err error) {
+func (r *RTPSender) Read(b []byte) (n int, attributes interceptor.Attributes, err error) {
 	select {
 	case <-r.sendCalled:
-		return r.srtpStream.Read(b)
+		return r.rtcpInterceptor.Read(b)
 	case <-r.stopCalled:
-		return 0, io.ErrClosedPipe
+		return 0, nil, io.ErrClosedPipe
 	}
 }
 
 // ReadRTCP is a convenience method that wraps Read and unmarshals for you.
-// It also runs any configured interceptors.
-func (r *RTPSender) ReadRTCP() ([]rtcp.Packet, error) {
-	pkts, _, err := r.interceptorRTCPReader.Read()
-	return pkts, err
-}
-
-func (r *RTPSender) readRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
+func (r *RTPSender) ReadRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
 	b := make([]byte, receiveMTU)
-	i, err := r.Read(b)
+	i, attributes, err := r.Read(b)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -255,7 +223,7 @@ func (r *RTPSender) readRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
 		return nil, nil, err
 	}
 
-	return pkts, make(interceptor.Attributes), nil
+	return pkts, attributes, nil
 }
 
 // hasSent tells if data has been ever sent for this instance

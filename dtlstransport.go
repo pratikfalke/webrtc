@@ -416,3 +416,31 @@ func (t *DTLSTransport) storeSimulcastStream(s *srtp.ReadStreamSRTP) {
 
 	t.simulcastStreams = append(t.simulcastStreams, s)
 }
+
+func (t *DTLSTransport) srtpReadStreamForSSRC(ssrc SSRC) (*srtp.ReadStreamSRTP, error) {
+	srtpSession, err := t.getSRTPSession()
+	if err != nil {
+		return nil, err
+	}
+
+	rtpReadStream, err := srtpSession.OpenReadStream(uint32(ssrc))
+	if err != nil {
+		return nil, err
+	}
+
+	return rtpReadStream, nil
+}
+
+func (t *DTLSTransport) srtcpReadStreamForSSRC(ssrc SSRC) (*srtp.ReadStreamSRTCP, error) {
+	srtcpSession, err := t.getSRTCPSession()
+	if err != nil {
+		return nil, err
+	}
+
+	rtcpReadStream, err := srtcpSession.OpenReadStream(uint32(ssrc))
+	if err != nil {
+		return nil, err
+	}
+
+	return rtcpReadStream, nil
+}

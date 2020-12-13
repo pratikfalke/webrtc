@@ -4,6 +4,7 @@ package webrtc
 
 import (
 	"github.com/pion/interceptor"
+	"github.com/pion/rtp"
 )
 
 // RegisterDefaultInterceptors will register some useful interceptors. If you want to customize which interceptors are loaded,
@@ -24,3 +25,11 @@ func ConfigureNack(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Re
 	interceptorRegistry.Add(&interceptor.NACK{})
 	return nil
 }
+
+// TODO
+type interceptorStreamAdapter struct{ interceptor interceptor.RTPWriter }
+
+func (i *interceptorStreamAdapter) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
+	return 0, nil
+}
+func (i *interceptorStreamAdapter) Write(b []byte) (int, error) { return 0, nil }

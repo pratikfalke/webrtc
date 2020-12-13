@@ -23,9 +23,8 @@ type TrackRemote struct {
 	params      RTPParameters
 	rid         string
 
-	receiver *RTPReceiver
-	peeked   []byte
-
+	receiver             *RTPReceiver
+	peeked               []byte
 	interceptorRTPReader interceptor.RTPReader
 }
 
@@ -36,33 +35,9 @@ func newTrackRemote(kind RTPCodecType, ssrc SSRC, rid string, receiver *RTPRecei
 		rid:      rid,
 		receiver: receiver,
 	}
-	t.interceptorRTPReader = interceptor.RTPReaderFunc(t.readRTP)
+	// t.interceptorRTPReader = interceptor.RTPReaderFunc(t.readRTP)
 
 	return t
-}
-
-func (t *TrackRemote) bindInterceptor() {
-	headerExtensions := make([]interceptor.RTPHeaderExtension, 0, len(t.params.HeaderExtensions))
-	for _, h := range t.params.HeaderExtensions {
-		headerExtensions = append(headerExtensions, interceptor.RTPHeaderExtension{ID: h.ID, URI: h.URI})
-	}
-	feedbacks := make([]interceptor.RTCPFeedback, 0, len(t.codec.RTCPFeedback))
-	for _, f := range t.codec.RTCPFeedback {
-		feedbacks = append(feedbacks, interceptor.RTCPFeedback{Type: f.Type, Parameter: f.Parameter})
-	}
-	info := &interceptor.StreamInfo{
-		ID:                  t.id,
-		Attributes:          interceptor.Attributes{},
-		SSRC:                uint32(t.ssrc),
-		PayloadType:         uint8(t.payloadType),
-		RTPHeaderExtensions: headerExtensions,
-		MimeType:            t.codec.MimeType,
-		ClockRate:           t.codec.ClockRate,
-		Channels:            t.codec.Channels,
-		SDPFmtpLine:         t.codec.SDPFmtpLine,
-		RTCPFeedback:        feedbacks,
-	}
-	t.interceptorRTPReader = t.receiver.api.interceptor.BindRemoteStream(info, interceptor.RTPReaderFunc(t.readRTP))
 }
 
 // ID is the unique identifier for this Track. This should be unique for the
@@ -125,7 +100,7 @@ func (t *TrackRemote) Codec() RTPCodecParameters {
 }
 
 // Read reads data from the track.
-func (t *TrackRemote) Read(b []byte) (n int, err error) {
+func (t *TrackRemote) Read(b []byte) (n int, attributes interceptor.Attributes, err error) {
 	t.mu.RLock()
 	r := t.receiver
 	peeked := t.peeked != nil
@@ -147,34 +122,10 @@ func (t *TrackRemote) Read(b []byte) (n int, err error) {
 	return r.readRTP(b, t)
 }
 
-// peek is like Read, but it doesn't discard the packet read
-func (t *TrackRemote) peek(b []byte) (n int, err error) {
-	n, err = t.Read(b)
-	if err != nil {
-		return
-	}
-
-	t.mu.Lock()
-	// this might overwrite data if somebody peeked between the Read
-	// and us getting the lock.  Oh well, we'll just drop a packet in
-	// that case.
-	data := make([]byte, n)
-	n = copy(data, b[:n])
-	t.peeked = data
-	t.mu.Unlock()
-	return
-}
-
 // ReadRTP is a convenience method that wraps Read and unmarshals for you.
-// It also runs any configured interceptors.
-func (t *TrackRemote) ReadRTP() (*rtp.Packet, error) {
-	p, _, err := t.interceptorRTPReader.Read()
-	return p, err
-}
-
-func (t *TrackRemote) readRTP() (*rtp.Packet, interceptor.Attributes, error) {
+func (t *TrackRemote) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
 	b := make([]byte, receiveMTU)
-	i, err := t.Read(b)
+	i, attributes, err := t.Read(b)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -183,7 +134,7 @@ func (t *TrackRemote) readRTP() (*rtp.Packet, interceptor.Attributes, error) {
 	if err := r.Unmarshal(b[:i]); err != nil {
 		return nil, nil, err
 	}
-	return r, interceptor.Attributes{}, nil
+	return r, attributes, nil
 }
 
 // determinePayloadType blocks and reads a single packet to determine the PayloadType for this Track
@@ -204,4 +155,22 @@ func (t *TrackRemote) determinePayloadType() error {
 	defer t.mu.Unlock()
 
 	return nil
+}
+
+// peek is like Read, but it doesn't discard the packet read
+func (t *TrackRemote) peek(b []byte) (n int, err error) {
+	n, _, err = t.Read(b)
+	if err != nil {
+		return
+	}
+
+	t.mu.Lock()
+	// this might overwrite data if somebody peeked between the Read
+	// and us getting the lock.  Oh well, we'll just drop a packet in
+	// that case.
+	data := make([]byte, n)
+	n = copy(data, b[:n])
+	t.peeked = data
+	t.mu.Unlock()
+	return
 }
